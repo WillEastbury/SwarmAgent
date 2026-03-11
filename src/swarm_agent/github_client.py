@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from pathlib import Path
@@ -40,6 +41,55 @@ class GitHubClient:
                 f"Command failed ({proc.returncode}): {cmd_str}\n{stderr.decode()}"
             )
         return stdout.decode().strip()
+
+    # ── Work discovery ──
+
+    async def find_unclaimed_issue(self, persona: str) -> int | None:
+        """Find an open issue not yet claimed by this persona.
+
+        Returns the issue number, or None if no unclaimed work exists.
+        Looks for open issues that do NOT have the review:started:<persona> label.
+        """
+        started_label = f"review:started:{persona}"
+        complete_label = f"review:complete:{persona}"
+
+        result = await self._run([
+            "gh", "issue", "list",
+            "--repo", self.config.repo,
+            "--state", "open",
+            "--json", "number,labels",
+            "--limit", "50",
+        ])
+
+        if not result:
+            return None
+
+        issues = json.loads(result)
+        for issue in issues:
+            label_names = [lb["name"] for lb in issue.get("labels", [])]
+            if started_label not in label_names and complete_label not in label_names:
+                return issue["number"]
+
+        return None
+
+    async def claim_issue(self, issue_number: int, persona: str) -> bool:
+        """Attempt to claim an issue by adding the started label.
+
+        Returns True if claim succeeded. This is not perfectly atomic
+        but provides best-effort deduplication across swarm pods.
+        """
+        label = f"review:started:{persona}"
+        try:
+            await self._run([
+                "gh", "issue", "edit", str(issue_number),
+                "--repo", self.config.repo,
+                "--add-label", label,
+            ])
+            logger.info("Claimed issue #%d with label '%s'", issue_number, label)
+            return True
+        except RuntimeError:
+            logger.warning("Failed to claim issue #%d", issue_number)
+            return False
 
     # ── Repository operations ──
 
@@ -99,7 +149,9 @@ class GitHubClient:
 
     # ── PR operations ──
 
-    async def create_pr(self, title: str, body: str, branch: str, base: str = "main") -> str:
+    async def create_pr(
+        self, title: str, body: str, branch: str, base: str = "main"
+    ) -> str:
         """Create a pull request. Returns the PR URL."""
         logger.info("Creating PR: %s (%s → %s)", title, branch, base)
         return await self._run([
@@ -113,15 +165,28 @@ class GitHubClient:
 
     # ── Git operations (run inside cloned repo) ──
 
-    async def commit_and_push(self, repo_dir: Path, message: str, branch: str) -> None:
+    async def commit_and_push(
+        self, repo_dir: Path, message: str, branch: str
+    ) -> None:
         """Stage all changes, commit, and push to a branch."""
         await self._run(["git", "checkout", "-B", branch], cwd=repo_dir)
         await self._run(["git", "add", "-A"], cwd=repo_dir)
         await self._run(["git", "commit", "-m", message], cwd=repo_dir)
         logger.info("Pushing to branch: %s", branch)
-        await self._run(["git", "push", "-u", "origin", branch, "--force"], cwd=repo_dir)
+        await self._run(
+            ["git", "push", "-u", "origin", branch, "--force"], cwd=repo_dir
+        )
 
     # ── Read operations ──
+
+    async def get_issue_context(self, issue_number: int) -> dict:
+        """Get full issue context including body, labels, and comments."""
+        result = await self._run([
+            "gh", "issue", "view", str(issue_number),
+            "--repo", self.config.repo,
+            "--json", "number,title,body,labels,comments",
+        ])
+        return json.loads(result)
 
     async def get_issue_body(self, issue_number: int) -> str:
         """Get the body of an issue."""

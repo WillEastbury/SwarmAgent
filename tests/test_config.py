@@ -37,16 +37,18 @@ class TestConfig:
         assert config.pr_number == 42
         assert config.target_type == "pr"
         assert config.target_ref == "42"
+        assert config.discover_work is False
 
     def test_from_env_with_issue(self, monkeypatch):
         monkeypatch.setenv("SWARM_ISSUE_NUMBER", "7")
         config = Config.from_env()
         assert config.issue_number == 7
         assert config.target_type == "issue"
+        assert config.discover_work is False
 
     def test_from_env_missing_vars(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY")
-        with pytest.raises(EnvironmentError, match="OPENAI_API_KEY"):
+        with pytest.raises(OSError, match="OPENAI_API_KEY"):
             Config.from_env()
 
     def test_repo_clone_url(self):
@@ -58,3 +60,22 @@ class TestConfig:
         config = Config.from_env()
         assert config.target_type == "repo"
         assert config.target_ref == "org/repo"
+
+    def test_discover_work_when_no_issue_or_pr(self):
+        config = Config.from_env()
+        assert config.discover_work is True
+
+    def test_task_not_required(self, monkeypatch):
+        """SWARM_TASK is optional — defaults to 'review'."""
+        monkeypatch.delenv("SWARM_TASK", raising=False)
+        config = Config.from_env()
+        assert config.task == "review"
+
+    def test_with_issue(self):
+        config = Config.from_env()
+        new_config = config.with_issue(99)
+        assert new_config.issue_number == 99
+        assert new_config.target_type == "issue"
+        assert new_config.discover_work is False
+        assert new_config.persona == config.persona
+        assert new_config.repo == config.repo

@@ -25,6 +25,8 @@ def main() -> None:
 
     agent = Agent(config)
     asyncio.run(agent.run())
+    # Exit 0 so KEDA can scale down the pod
+    sys.exit(0)
 
 
 if __name__ == "__main__":

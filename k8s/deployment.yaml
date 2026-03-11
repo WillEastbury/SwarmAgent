@@ -1,0 +1,86 @@
+# SwarmAgent Deployment — KEDA scales this from 0 → N based on GitHub issue events.
+# The external scaler in swarmymcswarmface increments on issue opened/reopened
+# and KEDA scales up pods. Each pod discovers unclaimed work, processes it, and exits.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: swarm-agent
+  namespace: default
+  labels:
+    app: swarm-agent
+spec:
+  replicas: 0  # KEDA manages replica count
+  selector:
+    matchLabels:
+      app: swarm-agent
+  template:
+    metadata:
+      labels:
+        app: swarm-agent
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: agent
+          image: ghcr.io/willeastbury/swarm-agent:latest
+          envFrom:
+            - secretRef:
+                name: swarm-agent-secrets
+            - configMapRef:
+                name: swarm-agent-config
+          volumeMounts:
+            - name: personas
+              mountPath: /app/personas
+              readOnly: true
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: personas
+          configMap:
+            name: swarm-agent-personas
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: swarm-agent-secrets
+  namespace: default
+type: Opaque
+stringData:
+  OPENAI_API_KEY: "REPLACE_ME"
+  GITHUB_TOKEN: "REPLACE_ME"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: swarm-agent-config
+  namespace: default
+data:
+  SWARM_PERSONA: "reviewer-agent"
+  SWARM_TASK: "review"
+  SWARM_REPO: "owner/repo"
+  SWARM_PERSONAS_FILE: "/app/personas/full-lifecycle-personas.json"
+  # Issue/PR numbers are NOT set — the agent discovers work automatically
+---
+# ScaledObject — wired to the swarmymcswarmface KEDA external scaler.
+# When issues are opened, the scaler's pendingCount rises and KEDA
+# scales this deployment up. Pods discover work, process it, and exit.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: swarm-agent-scaler
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: swarm-agent
+  pollingInterval: 5
+  cooldownPeriod: 120
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  triggers:
+    - type: external
+      metadata:
+        scalerAddress: github-issue-external-scaler.keda.svc.cluster.local:9090

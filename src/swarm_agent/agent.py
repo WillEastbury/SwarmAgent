@@ -1,4 +1,4 @@
-"""Main agent loop: init → signal started → reason → act → signal complete."""
+"""Main agent loop: discover work → claim → reason → act → signal complete → exit."""
 
 from __future__ import annotations
 
@@ -22,14 +22,34 @@ class Agent:
         self.github = GitHubClient(config)
         self.composer = PromptComposer()
 
+        if config.personas_file:
+            self.composer.load_personas_json(config.personas_file)
+
     async def run(self) -> None:
-        """Execute the full agent lifecycle."""
+        """Execute the full agent lifecycle.
+
+        When KEDA scales up this pod, no specific issue is assigned.
+        The agent discovers unclaimed work, claims it, processes it,
+        signals completion, and exits cleanly.
+        """
         try:
+            config = self.config
+
+            if config.discover_work:
+                config = await self._discover_and_claim()
+                if config is None:
+                    logger.info("No unclaimed work found — exiting cleanly")
+                    return
+                # Rebind clients to the discovered target
+                self.config = config
+                self.github = GitHubClient(config)
+
             logger.info(
-                "Agent starting: persona=%s, repo=%s, target=%s",
-                self.config.persona,
-                self.config.repo,
-                self.config.target_type,
+                "Agent starting: persona=%s, repo=%s, target=%s #%s",
+                config.persona,
+                config.repo,
+                config.target_type,
+                config.target_ref,
             )
             await self.github.signal_started()
 
@@ -45,8 +65,32 @@ class Agent:
         finally:
             await self.llm.close()
 
+    async def _discover_and_claim(self) -> Config | None:
+        """Find and claim an unclaimed issue. Returns updated Config or None."""
+        logger.info("Discovering unclaimed work for persona=%s", self.config.persona)
+        issue_number = await self.github.find_unclaimed_issue(self.config.persona)
+        if issue_number is None:
+            return None
+
+        claimed = await self.github.claim_issue(issue_number, self.config.persona)
+        if not claimed:
+            return None
+
+        logger.info("Claimed issue #%d", issue_number)
+        return self.config.with_issue(issue_number)
+
     def _build_system_prompt(self) -> str:
-        """Compose system prompt from persona + task instruction."""
+        """Compose system prompt — prefers JSON personas if loaded."""
+        if self.config.personas_file and self.config.persona in (
+            self.composer.get_persona_ids()
+        ):
+            issue_ctx = None
+            if self.config.issue_number is not None:
+                issue_ctx = {"number": self.config.issue_number}
+            return self.composer.compose_from_json(
+                self.config.persona, issue_context=issue_ctx
+            )
+
         return self.composer.compose(
             self.config.persona,
             self.config.task,
@@ -66,8 +110,21 @@ class Agent:
             parts.append(f"PR #{self.config.pr_number} body:\n{body}")
             parts.append(f"PR diff:\n{diff}")
         elif self.config.issue_number is not None:
-            body = await self.github.get_issue_body(self.config.issue_number)
-            parts.append(f"Issue #{self.config.issue_number} body:\n{body}")
+            ctx = await self.github.get_issue_context(self.config.issue_number)
+            parts.append(f"Issue #{ctx['number']}: {ctx.get('title', '')}")
+            parts.append(f"Body:\n{ctx.get('body', '(empty)')}")
+            labels = [lb["name"] for lb in ctx.get("labels", [])]
+            if labels:
+                parts.append(f"Labels: {', '.join(labels)}")
+            comments = ctx.get("comments", [])
+            if comments:
+                recent = comments[-8:]
+                comment_text = "\n".join(
+                    f"- {c.get('author', {}).get('login', '?')}: "
+                    f"{(c.get('body', '') or '')[:1200]}"
+                    for c in recent
+                )
+                parts.append(f"Recent comments:\n{comment_text}")
 
         repo_files = self._list_repo_files(repo_dir)
         parts.append(f"Repository file listing:\n{repo_files}")
@@ -91,7 +148,7 @@ class Agent:
     async def _act_on_response(self, response: str, repo_dir: Path) -> None:
         """Take action based on the LLM response.
 
-        For now, the agent posts the response as a comment.
+        Posts the response as a comment on the target PR/issue.
         Future: parse structured responses for file edits, label changes, etc.
         """
         logger.info("Agent response length: %d chars", len(response))
