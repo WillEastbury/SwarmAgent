@@ -1,0 +1,50 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: swarm-agent
+  labels:
+    app: swarm-agent
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: swarm-agent
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: agent
+          image: swarm-agent:latest
+          envFrom:
+            - secretRef:
+                name: swarm-agent-secrets
+            - configMapRef:
+                name: swarm-agent-config
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: swarm-agent-secrets
+type: Opaque
+stringData:
+  OPENAI_API_KEY: "REPLACE_ME"
+  GITHUB_TOKEN: "REPLACE_ME"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: swarm-agent-config
+data:
+  SWARM_PERSONA: "reviewer"
+  SWARM_TASK: "review"
+  SWARM_REPO: "org/repo"
+  # SWARM_PR_NUMBER: "42"
+  # SWARM_ISSUE_NUMBER: "7"
