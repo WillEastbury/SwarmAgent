@@ -91,3 +91,20 @@ class Config:
             personas_file=self.personas_file,
             discover_work=False,
         )
+
+    def with_pr(self, pr_number: int) -> Config:
+        """Return a new Config targeting a specific PR."""
+        return Config(
+            openai_api_key=self.openai_api_key,
+            github_token=self.github_token,
+            persona=self.persona,
+            task=self.task,
+            repo=self.repo,
+            pr_number=pr_number,
+            issue_number=None,
+            openai_model=self.openai_model,
+            openai_base_url=self.openai_base_url,
+            workdir=self.workdir,
+            personas_file=self.personas_file,
+            discover_work=False,
+        )

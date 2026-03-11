@@ -79,12 +79,13 @@ class PromptComposer:
 
         p = self._personas_cache[persona_id]
         instructions = p.get("agent_instructions", {})
+        phase = p["phase"]
 
         parts = [
             p["prompt"],
             "",
             f"GOAL: {p['goal']}",
-            f"PHASE: {p['phase']}",
+            f"PHASE: {phase}",
             "",
             "OPERATING RULES:",
             *[f"- {rule}" for rule in p.get("operating_rules", [])],
@@ -115,7 +116,50 @@ class PromptComposer:
             for key, desc in contract.items():
                 parts.append(f"- {key}: {desc}")
 
+        # Inject issue/PR context into the prompt
+        if issue_context:
+            parts.append("")
+            parts.append("CURRENT WORK ITEM:")
+            if issue_context.get("number"):
+                parts.append(f"- Number: #{issue_context['number']}")
+            if issue_context.get("title"):
+                parts.append(f"- Title: {issue_context['title']}")
+            if issue_context.get("labels"):
+                parts.append(f"- Labels: {', '.join(issue_context['labels'])}")
+            if issue_context.get("type"):
+                parts.append(f"- Type: {issue_context['type']}")
+
+        # Add response format instructions based on persona phase
+        parts.append("")
+        parts.append("RESPONSE FORMAT:")
+        if phase in (
+            "implementation", "secure-sdlc", "testing", "delivery"
+        ):
+            parts.append(
+                "You may propose code changes. When you do, use this format "
+                "for each file you want to create or modify:"
+            )
+            parts.append("")
+            parts.append("```file:path/to/file.py")
+            parts.append("<full file contents>")
+            parts.append("```")
+            parts.append("")
+            parts.append(
+                "Include a SUMMARY section at the end with a one-line "
+                "commit message and a brief explanation."
+            )
+        else:
+            parts.append(
+                "Provide your analysis as structured text. Do NOT propose "
+                "code changes unless explicitly asked."
+            )
+
         return "\n".join(parts)
+
+    def get_persona_phase(self, persona_id: str) -> str | None:
+        """Return the phase for a loaded JSON persona, or None."""
+        p = self._personas_cache.get(persona_id)
+        return p["phase"] if p else None
 
     def _load_template(self, template_path: str, **kwargs: str) -> str:
         try:

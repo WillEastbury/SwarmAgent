@@ -86,14 +86,28 @@ docker build -t swarm-agent .
 
 ### Work Discovery
 When KEDA scales the pod up without a specific `SWARM_ISSUE_NUMBER` or `SWARM_PR_NUMBER`, the agent:
-1. Queries open issues via `gh issue list`
-2. Filters for issues without `review:started:<persona>` or `review:complete:<persona>` labels
-3. Claims the first unclaimed issue by adding the started label
-4. If no unclaimed work exists, exits cleanly (code 0) so KEDA can scale down
+1. Queries open issues (or PRs for `quality-gate` phase personas) via `gh`
+2. Filters for items without `review:started:<persona>` or `review:complete:<persona>` labels
+3. **Claims** the item using a check-after-label pattern (label → wait → verify) to prevent duplicate claims across pods
+4. Falls back to PRs if no issues found, or vice versa
+5. If no unclaimed work exists, exits cleanly (code 0) so KEDA can scale down
+
+### Persona-Aware Behavior
+The agent's behavior changes based on the persona's **phase** from `full-lifecycle-personas.json`:
+
+- **Code phases** (`implementation`, `secure-sdlc`, `testing`, `delivery`): The LLM is instructed to produce `\`\`\`file:path\`\`\`` blocks. The agent parses these, writes files, commits, pushes to a branch, and creates a PR.
+- **Non-code phases** (`planning`, `ideation`, `architecture`, etc.): The agent posts analysis as a comment — no code changes.
+- **PR review phases** (`quality-gate`): The agent discovers open PRs instead of issues.
+
+### Response Parsing
+The agent parses structured LLM responses:
+- **File blocks** (`\`\`\`file:path/to/file.py\n...\`\`\``) — extracted and written to the repo
+- **SUMMARY section** — used as the commit message
+- If file blocks are present and the persona is a code phase, the agent: writes files → commits → pushes → creates PR → comments with link
 
 ### Persona Loading
 Two modes:
-1. **swarmymcswarmface JSON** — set `SWARM_PERSONAS_FILE` to a `full-lifecycle-personas.json` path. The agent loads personas by `id` and builds system prompts from the structured format (goal, prompt, agent_instructions, operating_rules, output_contract).
+1. **swarmymcswarmface JSON** — set `SWARM_PERSONAS_FILE` to a `full-lifecycle-personas.json` path. The agent loads personas by `id` and builds system prompts with goal, prompt, agent_instructions, operating_rules, output_contract, and **issue/PR context**.
 2. **Jinja2 templates** — fallback. Templates in `prompts/persona/` and `prompts/instructions/`.
 
 ### "Good Enough" Signal

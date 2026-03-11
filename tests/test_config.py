@@ -79,3 +79,12 @@ class TestConfig:
         assert new_config.discover_work is False
         assert new_config.persona == config.persona
         assert new_config.repo == config.repo
+
+    def test_with_pr(self):
+        config = Config.from_env()
+        new_config = config.with_pr(55)
+        assert new_config.pr_number == 55
+        assert new_config.issue_number is None
+        assert new_config.target_type == "pr"
+        assert new_config.discover_work is False
+        assert new_config.persona == config.persona

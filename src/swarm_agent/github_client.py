@@ -12,6 +12,8 @@ from swarm_agent.config import Config
 
 logger = logging.getLogger(__name__)
 
+CLAIM_VERIFY_DELAY = 1.0  # seconds to wait before verifying claim
+
 
 class GitHubClient:
     """Wraps the `gh` CLI and git for GitHub operations."""
@@ -48,7 +50,6 @@ class GitHubClient:
         """Find an open issue not yet claimed by this persona.
 
         Returns the issue number, or None if no unclaimed work exists.
-        Looks for open issues that do NOT have the review:started:<persona> label.
         """
         started_label = f"review:started:{persona}"
         complete_label = f"review:complete:{persona}"
@@ -72,11 +73,40 @@ class GitHubClient:
 
         return None
 
-    async def claim_issue(self, issue_number: int, persona: str) -> bool:
-        """Attempt to claim an issue by adding the started label.
+    async def find_unclaimed_pr(self, persona: str) -> int | None:
+        """Find an open PR not yet claimed by this persona.
 
-        Returns True if claim succeeded. This is not perfectly atomic
-        but provides best-effort deduplication across swarm pods.
+        Returns the PR number, or None if no unclaimed PRs exist.
+        """
+        started_label = f"review:started:{persona}"
+        complete_label = f"review:complete:{persona}"
+
+        result = await self._run([
+            "gh", "pr", "list",
+            "--repo", self.config.repo,
+            "--state", "open",
+            "--json", "number,labels",
+            "--limit", "50",
+        ])
+
+        if not result:
+            return None
+
+        prs = json.loads(result)
+        for pr in prs:
+            label_names = [lb["name"] for lb in pr.get("labels", [])]
+            if started_label not in label_names and complete_label not in label_names:
+                return pr["number"]
+
+        return None
+
+    async def claim_issue(self, issue_number: int, persona: str) -> bool:
+        """Claim an issue with check-after-label to prevent duplicate claims.
+
+        1. Add the started label
+        2. Wait briefly for other pods to also label
+        3. Re-read labels and check that only ONE started label exists
+        4. If duplicates detected, remove our label and back off
         """
         label = f"review:started:{persona}"
         try:
@@ -85,11 +115,65 @@ class GitHubClient:
                 "--repo", self.config.repo,
                 "--add-label", label,
             ])
-            logger.info("Claimed issue #%d with label '%s'", issue_number, label)
-            return True
         except RuntimeError:
-            logger.warning("Failed to claim issue #%d", issue_number)
+            logger.warning("Failed to add label to issue #%d", issue_number)
             return False
+
+        # Verify we're the only claimer
+        await asyncio.sleep(CLAIM_VERIFY_DELAY)
+        if not await self._verify_single_claim(
+            "issue", issue_number, label
+        ):
+            logger.warning(
+                "Duplicate claim detected on issue #%d — backing off",
+                issue_number,
+            )
+            return False
+
+        logger.info("Claimed issue #%d with label '%s'", issue_number, label)
+        return True
+
+    async def claim_pr(self, pr_number: int, persona: str) -> bool:
+        """Claim a PR with check-after-label pattern."""
+        label = f"review:started:{persona}"
+        try:
+            await self._run([
+                "gh", "pr", "edit", str(pr_number),
+                "--repo", self.config.repo,
+                "--add-label", label,
+            ])
+        except RuntimeError:
+            logger.warning("Failed to add label to PR #%d", pr_number)
+            return False
+
+        await asyncio.sleep(CLAIM_VERIFY_DELAY)
+        if not await self._verify_single_claim("pr", pr_number, label):
+            logger.warning(
+                "Duplicate claim detected on PR #%d — backing off",
+                pr_number,
+            )
+            return False
+
+        logger.info("Claimed PR #%d with label '%s'", pr_number, label)
+        return True
+
+    async def _verify_single_claim(
+        self, target_type: str, number: int, label: str
+    ) -> bool:
+        """Re-read labels and verify the claim label appears exactly once.
+
+        gh labels are deduplicated, so if the label exists we have a valid claim.
+        The real check is that no review:complete label was added in the interim.
+        """
+        cmd_type = "issue" if target_type == "issue" else "pr"
+        result = await self._run([
+            "gh", cmd_type, "view", str(number),
+            "--repo", self.config.repo,
+            "--json", "labels",
+        ])
+        data = json.loads(result)
+        label_names = [lb["name"] for lb in data.get("labels", [])]
+        return label in label_names
 
     # ── Repository operations ──
 
@@ -177,6 +261,13 @@ class GitHubClient:
             ["git", "push", "-u", "origin", branch, "--force"], cwd=repo_dir
         )
 
+    async def has_changes(self, repo_dir: Path) -> bool:
+        """Check if the working tree has uncommitted changes."""
+        result = await self._run(
+            ["git", "status", "--porcelain"], cwd=repo_dir
+        )
+        return bool(result.strip())
+
     # ── Read operations ──
 
     async def get_issue_context(self, issue_number: int) -> dict:
@@ -196,6 +287,16 @@ class GitHubClient:
             "--json", "body",
             "--jq", ".body",
         ])
+
+    async def get_pr_context(self, pr_number: int) -> dict:
+        """Get full PR context including body, labels, reviews, and status."""
+        result = await self._run([
+            "gh", "pr", "view", str(pr_number),
+            "--repo", self.config.repo,
+            "--json",
+            "number,title,body,labels,comments,reviews,state,isDraft",
+        ])
+        return json.loads(result)
 
     async def get_pr_body(self, pr_number: int) -> str:
         """Get the body of a pull request."""

@@ -62,6 +62,16 @@ def personas_json(tmp_path):
                     "workflow_steps": ["review test coverage"],
                 },
             },
+            {
+                "id": "product-manager",
+                "phase": "planning",
+                "goal": "Prioritize and refine issues.",
+                "prompt": "You are a product manager.",
+                "agent_instructions": {
+                    "inputs": ["backlog"],
+                    "workflow_steps": ["triage issues"],
+                },
+            },
         ],
     }
     filepath = tmp_path / "personas.json"
@@ -101,7 +111,8 @@ class TestJsonPersonas:
         ids = composer.get_persona_ids()
         assert "backend-engineer" in ids
         assert "qa-lead" in ids
-        assert len(ids) == 2
+        assert "product-manager" in ids
+        assert len(ids) == 3
 
     def test_compose_from_json(self, composer, personas_json):
         composer.load_personas_json(personas_json)
@@ -127,3 +138,44 @@ class TestJsonPersonas:
     def test_load_personas_json_missing_file(self, composer):
         with pytest.raises(FileNotFoundError):
             composer.load_personas_json("/nonexistent/path.json")
+
+    def test_compose_from_json_with_issue_context(self, composer, personas_json):
+        composer.load_personas_json(personas_json)
+        ctx = {"number": 42, "title": "Fix login bug", "labels": ["bug"], "type": "issue"}
+        result = composer.compose_from_json("backend-engineer", issue_context=ctx)
+        assert "CURRENT WORK ITEM:" in result
+        assert "#42" in result
+        assert "Fix login bug" in result
+        assert "bug" in result
+        assert "issue" in result
+
+    def test_compose_from_json_without_context(self, composer, personas_json):
+        composer.load_personas_json(personas_json)
+        result = composer.compose_from_json("backend-engineer")
+        assert "CURRENT WORK ITEM:" not in result
+
+    def test_compose_from_json_code_phase_response_format(self, composer, personas_json):
+        composer.load_personas_json(personas_json)
+        result = composer.compose_from_json("backend-engineer")
+        assert "RESPONSE FORMAT:" in result
+        assert "```file:" in result
+
+    def test_compose_from_json_noncode_phase_response_format(self, composer, personas_json):
+        """qa-lead is in 'testing' phase which CAN produce code (test files)."""
+        composer.load_personas_json(personas_json)
+        result = composer.compose_from_json("qa-lead")
+        assert "RESPONSE FORMAT:" in result
+        assert "```file:" in result  # testing phase can propose code
+
+    def test_compose_from_json_planning_phase_no_code(self, composer, personas_json):
+        """product-manager is in 'planning' phase — should NOT propose code."""
+        composer.load_personas_json(personas_json)
+        result = composer.compose_from_json("product-manager")
+        assert "RESPONSE FORMAT:" in result
+        assert "Do NOT propose code changes" in result
+
+    def test_get_persona_phase(self, composer, personas_json):
+        composer.load_personas_json(personas_json)
+        assert composer.get_persona_phase("backend-engineer") == "implementation"
+        assert composer.get_persona_phase("qa-lead") == "testing"
+        assert composer.get_persona_phase("nonexistent") is None
