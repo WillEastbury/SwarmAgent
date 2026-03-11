@@ -10,6 +10,7 @@ from swarm_agent.config import Config
 from swarm_agent.github_client import GitHubClient
 from swarm_agent.llm import LLMClient
 from swarm_agent.persona import PromptComposer
+from swarm_agent.telemetry import EventTracker
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,12 @@ class Agent:
         self.llm = LLMClient(config)
         self.github = GitHubClient(config)
         self.composer = PromptComposer()
+        self.tracker = EventTracker(
+            persona=config.persona,
+            repo=config.repo,
+            target_type=config.target_type,
+            target_ref=config.target_ref,
+        )
 
         if config.personas_file:
             self.composer.load_personas_json(config.personas_file)
@@ -83,12 +90,16 @@ class Agent:
             config = self.config
 
             if config.discover_work:
-                config = await self._discover_and_claim()
+                with self.tracker.span("discover_work", stage="discovery"):
+                    config = await self._discover_and_claim()
                 if config is None:
                     logger.info("No unclaimed work found — exiting cleanly")
+                    self.tracker.record("no_work_found", stage="discovery")
                     return
                 self.config = config
                 self.github = GitHubClient(config)
+                self.tracker.target_type = config.target_type
+                self.tracker.target_ref = config.target_ref
 
             logger.info(
                 "Agent starting: persona=%s, repo=%s, target=%s #%s",
@@ -99,12 +110,27 @@ class Agent:
             )
             await self.github.signal_started()
 
-            repo_dir = await self.github.clone_repo()
-            context = await self._gather_context(repo_dir)
+            with self.tracker.span("clone_repo", stage="setup"):
+                repo_dir = await self.github.clone_repo()
+
+            with self.tracker.span("gather_context", stage="context"):
+                context = await self._gather_context(repo_dir)
+
             system_prompt = self._build_system_prompt()
 
-            response = await self.llm.chat(system_prompt, context)
-            await self._act_on_response(response, repo_dir)
+            with self.tracker.span("llm_reasoning", stage="reasoning"):
+                response = await self.llm.chat(system_prompt, context)
+            self.tracker.record(
+                "llm_response", stage="reasoning",
+                response_length=len(response),
+            )
+
+            with self.tracker.span("act_on_response", stage="action"):
+                await self._act_on_response(response, repo_dir)
+
+            # Post metrics as part of completion
+            metrics_comment = self.tracker.format_markdown_report()
+            await self.github.add_comment(metrics_comment)
 
             await self.github.signal_complete()
             logger.info("Agent finished — signaled 'good enough'")

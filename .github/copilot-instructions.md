@@ -125,6 +125,33 @@ Not all agents write code. The 30 swarmymcswarmface personas span ideation, desi
 - All GitHub write operations are logged before execution.
 - The agent fails loudly (raises exceptions) when API calls fail.
 
+## Observability
+
+### Structured Logging
+Set `SWARM_LOG_FORMAT=json` for machine-parseable JSON logs. Each log entry includes timestamp, level, logger, message, and (for lifecycle events) an `event` object with stage, duration, persona, and metadata.
+
+### OpenTelemetry Tracing
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to enable distributed tracing. Spans are emitted for each lifecycle stage: `discover_work`, `clone_repo`, `gather_context`, `llm_reasoning`, `act_on_response`. Install the `otel` extras: `pip install swarm-agent[otel]`.
+
+### Lifecycle Metrics
+The agent automatically posts a timing breakdown as a collapsible comment on the issue/PR when it completes, showing duration for each stage (discovery, clone, context gathering, LLM reasoning, action).
+
+### Swarm Dashboard
+A CLI tool to view real-time swarm status across all agents:
+
+```bash
+# One-shot status
+python -m swarm_agent.dashboard owner/repo
+
+# Watch mode (refreshes every 10s)
+python -m swarm_agent.dashboard owner/repo --watch
+
+# JSON output (for scripting)
+python -m swarm_agent.dashboard owner/repo --format json
+```
+
+Shows active agents, completed reviews, unclaimed issues/PRs, and per-persona status by reading `review:started:*` and `review:complete:*` labels.
+
 ## Idea Factory
 
 A minimal Flask web app (`src/swarm_agent/idea_factory/`) behind HTTP basic auth. It presents a single text box where users submit ideas, which are created as GitHub issues with the `idea` label. The PM persona in the swarm then picks up and evaluates these issues.
@@ -155,6 +182,8 @@ Deployed via `k8s/idea-factory.yaml` (Deployment + Service + Secrets).
 | `SWARM_PERSONAS_FILE` | No | Path to swarmymcswarmface `full-lifecycle-personas.json` |
 | `OPENAI_MODEL` | No | OpenAI model (default: `gpt-4o`) |
 | `OPENAI_BASE_URL` | No | OpenAI API base URL |
+| `SWARM_LOG_FORMAT` | No | `text` (default) or `json` for structured JSON logging |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | No | OTLP endpoint for OpenTelemetry tracing (e.g., `http://otel-collector:4317`) |
 
 ### Idea Factory only
 

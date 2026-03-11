@@ -20,6 +20,14 @@ dev = [
     "ruff>=0.5",
     "respx>=0.21",
 ]
+otel = [
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20",
+]
+
+[project.scripts]
+swarm-dashboard = "swarm_agent.dashboard.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

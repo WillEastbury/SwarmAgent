@@ -18,6 +18,22 @@ python -m swarm_agent
 3. Claims the issue, processes it via OpenAI, posts results as comments
 4. Signals `review:complete:<persona>` and exits cleanly
 
+## Observability
+
+```bash
+# Structured JSON logs
+SWARM_LOG_FORMAT=json python -m swarm_agent
+
+# OpenTelemetry tracing (install extras first)
+pip install -e ".[otel]"
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 python -m swarm_agent
+
+# Swarm dashboard — see all agents in real-time
+python -m swarm_agent.dashboard owner/repo --watch
+```
+
+Each agent posts a timing breakdown comment on the issue/PR when it completes.
+
 ## Environment Variables
 
 | Variable | Required | Description |
@@ -30,3 +46,5 @@ python -m swarm_agent
 | `SWARM_PR_NUMBER` | No | Specific PR to operate on |
 | `SWARM_ISSUE_NUMBER` | No | Specific issue to operate on |
 | `SWARM_PERSONAS_FILE` | No | Path to `full-lifecycle-personas.json` |
+| `SWARM_LOG_FORMAT` | No | `text` (default) or `json` for structured logs |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | No | OTLP endpoint for distributed tracing |

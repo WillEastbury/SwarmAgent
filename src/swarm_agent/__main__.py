@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 
 from swarm_agent.agent import Agent
 from swarm_agent.config import Config
+from swarm_agent.telemetry import configure_logging
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        stream=sys.stderr,
-    )
+    log_format = os.environ.get("SWARM_LOG_FORMAT", "text")
+    configure_logging(log_format)
 
     try:
         config = Config.from_env()
