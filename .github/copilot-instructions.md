@@ -19,14 +19,19 @@ SwarmAgent/
 │   ├── persona.py         # Prompt loading (Jinja2 templates + swarmymcswarmface JSON)
 │   ├── llm.py             # OpenAI REST API client (no SDK — raw HTTP via httpx)
 │   ├── github_client.py   # GitHub operations via `gh` CLI (labels, comments, PRs, work discovery)
-│   └── config.py          # Environment-based configuration
+│   ├── config.py          # Environment-based configuration
+│   └── idea_factory/      # Web UI for submitting ideas as GitHub issues
+│       ├── app.py         # Flask app with basic auth
+│       └── templates/     # HTML templates
 ├── prompts/
 │   ├── persona/           # Jinja2 persona templates (fallback)
 │   └── instructions/      # Jinja2 instruction templates (fallback)
 ├── k8s/
-│   └── deployment.yaml    # Deployment (replicas:0) + ScaledObject + Secrets/ConfigMap
+│   ├── deployment.yaml    # SwarmAgent Deployment + ScaledObject
+│   └── idea-factory.yaml  # Idea Factory Deployment + Service
 ├── tests/
-├── Dockerfile
+├── Dockerfile                 # SwarmAgent container
+├── idea-factory.Dockerfile    # Idea Factory container
 ├── requirements.txt
 └── pyproject.toml
 ```
@@ -106,6 +111,22 @@ Not all agents write code. The 30 swarmymcswarmface personas span ideation, desi
 - All GitHub write operations are logged before execution.
 - The agent fails loudly (raises exceptions) when API calls fail.
 
+## Idea Factory
+
+A minimal Flask web app (`src/swarm_agent/idea_factory/`) behind HTTP basic auth. It presents a single text box where users submit ideas, which are created as GitHub issues with the `idea` label. The PM persona in the swarm then picks up and evaluates these issues.
+
+```bash
+# Run locally
+IDEA_FACTORY_USERNAME=admin IDEA_FACTORY_PASSWORD=secret \
+  SWARM_REPO=owner/repo GITHUB_TOKEN=ghp_xxx \
+  python -m swarm_agent.idea_factory
+
+# Build container
+docker build -f idea-factory.Dockerfile -t idea-factory .
+```
+
+Deployed via `k8s/idea-factory.yaml` (Deployment + Service + Secrets).
+
 ## Environment Variables
 
 | Variable | Required | Description |
@@ -120,3 +141,13 @@ Not all agents write code. The 30 swarmymcswarmface personas span ideation, desi
 | `SWARM_PERSONAS_FILE` | No | Path to swarmymcswarmface `full-lifecycle-personas.json` |
 | `OPENAI_MODEL` | No | OpenAI model (default: `gpt-4o`) |
 | `OPENAI_BASE_URL` | No | OpenAI API base URL |
+
+### Idea Factory only
+
+| Variable | Required | Description |
+|---|---|---|
+| `IDEA_FACTORY_USERNAME` | Yes | Basic auth username |
+| `IDEA_FACTORY_PASSWORD` | Yes | Basic auth password |
+| `IDEA_FACTORY_SECRET_KEY` | No | Flask secret key (auto-generated if unset) |
+| `GITHUB_TOKEN` | Yes | PAT for creating issues |
+| `SWARM_REPO` | Yes | Target repo for issue creation |
